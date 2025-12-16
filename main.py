@@ -5,6 +5,7 @@ import httpx
 import sqlite3
 import time
 from typing import Optional, List, Dict, Tuple
+from urllib.parse import quote, unquote
 from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 from dotenv import load_dotenv
@@ -36,6 +37,8 @@ MENU = ReplyKeyboardMarkup(
     resize_keyboard=True,
 )
 BACK = ReplyKeyboardMarkup([[BTN_BACK]], resize_keyboard=True)
+
+PAGE_SIZE = 20
 
 
 # ---------- DB ----------
@@ -147,6 +150,34 @@ class MealDB:
         d = await self.get("filter.php", {"i": ing})
         return d.get("meals") or []
 
+    async def list_areas(self) -> List[str]:
+        d = await self.get("list.php", {"a": "list"})
+        meals = d.get("meals") or []
+        out = []
+        for x in meals:
+            a = (x.get("strArea") or "").strip()
+            if a:
+                out.append(a)
+        return sorted(set(out))
+
+    async def list_categories(self) -> List[str]:
+        d = await self.get("list.php", {"c": "list"})
+        meals = d.get("meals") or []
+        out = []
+        for x in meals:
+            c = (x.get("strCategory") or "").strip()
+            if c:
+                out.append(c)
+        return sorted(set(out))
+
+    async def filter_area(self, area: str) -> List[dict]:
+        d = await self.get("filter.php", {"a": area})
+        return d.get("meals") or []
+
+    async def filter_category(self, category: str) -> List[dict]:
+        d = await self.get("filter.php", {"c": category})
+        return d.get("meals") or []
+
 
 def parse_ingredients(s: str) -> List[str]:
     s = (s or "").replace(";", ",").replace("\n", ",")
@@ -176,6 +207,61 @@ def meal_full_text(meal: dict) -> str:
         f"<b>Instructions:</b>\n{html.escape(instr)}"
     )
     return body[:3800]
+
+
+def clamp(n: int, lo: int, hi: int) -> int:
+    return lo if n < lo else hi if n > hi else n
+
+
+def paginate(items: List, page: int, page_size: int) -> Tuple[List, int]:
+    total_pages = max(1, (len(items) + page_size - 1) // page_size)
+    page = clamp(page, 0, total_pages - 1)
+    start_idx = page * page_size
+    end_idx = start_idx + page_size
+    return items[start_idx:end_idx], total_pages
+
+
+def list_kb(items: List[str], prefix: str, page: int, total_pages: int) -> InlineKeyboardMarkup:
+    rows = []
+    row = []
+    for x in items:
+        row.append(InlineKeyboardButton(x, callback_data=f"{prefix}:sel:{quote(x)}"))
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"{prefix}:page:{page - 1}"))
+    if page < total_pages - 1:
+        nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"{prefix}:page:{page + 1}"))
+    if nav:
+        rows.append(nav)
+
+    rows.append([InlineKeyboardButton("🏠 Menu", callback_data="menu")])
+    return InlineKeyboardMarkup(rows)
+
+
+def meals_kb(meals: List[dict], kind: str, value: str, page: int, total_pages: int) -> InlineKeyboardMarkup:
+    rows = []
+    for m in meals:
+        mid = str(m.get("idMeal") or "")
+        name = str(m.get("strMeal") or "—")
+        rows.append([InlineKeyboardButton(name, callback_data=f"meal:{mid}")])
+
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"{kind}_meals:page:{quote(value)}:{page - 1}"))
+    if page < total_pages - 1:
+        nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"{kind}_meals:page:{quote(value)}:{page + 1}"))
+    if nav:
+        rows.append(nav)
+
+    rows.append([InlineKeyboardButton("⬅️ Back", callback_data=f"{kind}:page:0")])
+    rows.append([InlineKeyboardButton("🏠 Menu", callback_data="menu")])
+    return InlineKeyboardMarkup(rows)
 
 
 def fav_kb(db: DB, user_id: int, meal_id: str) -> InlineKeyboardMarkup:
@@ -220,7 +306,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
-        "Commands:\n/start - Start\n/help - Help\n/random - Random recipe\n/name - Search by name\n/find - Search by ingredients",
+        "Commands:\n/start - Start\n/help - Help\n/random - Random recipe\n"
+        "/name - Search by name\n/find - Search by ingredients\n"
+        "/cuisines - Browse cuisines\n/categories - Browse categories",
         reply_markup=MENU
     )
 
@@ -252,6 +340,30 @@ async def find_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+async def cuisines_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    api: MealDB = context.application.bot_data["api"]
+    areas = await api.list_areas()
+    page = 0
+    page_items, total = paginate(areas, page, PAGE_SIZE)
+
+    await update.message.reply_text(
+        "🌍 Choose a cuisine (area):",
+        reply_markup=list_kb(page_items, "area", page, total)
+    )
+
+
+async def categories_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    api: MealDB = context.application.bot_data["api"]
+    cats = await api.list_categories()
+    page = 0
+    page_items, total = paginate(cats, page, PAGE_SIZE)
+
+    await update.message.reply_text(
+        "🏷️ Choose a category:",
+        reply_markup=list_kb(page_items, "cat", page, total)
+    )
+
+
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     api: MealDB = context.application.bot_data["api"]
     db: DB = context.application.bot_data["db"]
@@ -276,6 +388,12 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     if text == BTN_ING:
         await find_cmd(update, context)
+        return
+    if text == BTN_AREA:
+        await cuisines_cmd(update, context)
+        return
+    if text == BTN_CAT:
+        await categories_cmd(update, context)
         return
 
     mode = context.user_data.get("mode")
@@ -375,7 +493,6 @@ async def cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             title = meal.get("strMeal", "—") if meal else "—"
             db.add_fav(query.from_user.id, meal_id, title)
 
-        # Обновляем кнопку
         try:
             await query.message.edit_reply_markup(
                 reply_markup=fav_kb(db, query.from_user.id, meal_id)
@@ -383,6 +500,87 @@ async def cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         except:
             pass
         return
+
+    # Pagination for areas/categories
+    if data.startswith("area:page:"):
+        page = int(data.split(":")[-1])
+        areas = await api.list_areas()
+        page_items, total = paginate(areas, page, PAGE_SIZE)
+
+        await query.message.edit_text(
+            "🌍 Choose a cuisine (area):",
+            reply_markup=list_kb(page_items, "area", page, total)
+        )
+        return
+
+    if data.startswith("cat:page:"):
+        page = int(data.split(":")[-1])
+        cats = await api.list_categories()
+        page_items, total = paginate(cats, page, PAGE_SIZE)
+
+        await query.message.edit_text(
+            "🏷️ Choose a category:",
+            reply_markup=list_kb(page_items, "cat", page, total)
+        )
+        return
+
+    # Select area/category
+    if data.startswith("area:sel:"):
+        area = unquote(data.split(":", 2)[2])
+        all_meals = await api.filter_area(area)
+        page = 0
+        page_items, total = paginate(all_meals, page, PAGE_SIZE)
+
+        await query.message.edit_text(
+            f"🌍 Cuisine: <b>{html.escape(area)}</b>\nChoose a recipe:",
+            parse_mode="HTML",
+            reply_markup=meals_kb(page_items, "area", area, page, total)
+        )
+        return
+
+    if data.startswith("cat:sel:"):
+        cat = unquote(data.split(":", 2)[2])
+        all_meals = await api.filter_category(cat)
+        page = 0
+        page_items, total = paginate(all_meals, page, PAGE_SIZE)
+
+        await query.message.edit_text(
+            f"🏷️ Category: <b>{html.escape(cat)}</b>\nChoose a recipe:",
+            parse_mode="HTML",
+            reply_markup=meals_kb(page_items, "cat", cat, page, total)
+        )
+        return
+
+    # Pagination for meals in area/category
+    if data.startswith("area_meals:page:"):
+        _, _, area_q, page_s = data.split(":", 3)
+        area = unquote(area_q)
+        page = int(page_s)
+        all_meals = await api.filter_area(area)
+        page_items, total = paginate(all_meals, page, PAGE_SIZE)
+
+        await query.message.edit_text(
+            f"🌍 Cuisine: <b>{html.escape(area)}</b>\nChoose a recipe:",
+            parse_mode="HTML",
+            reply_markup=meals_kb(page_items, "area", area, page, total)
+        )
+        return
+
+    if data.startswith("cat_meals:page:"):
+        _, _, cat_q, page_s = data.split(":", 3)
+        cat = unquote(cat_q)
+        page = int(page_s)
+        all_meals = await api.filter_category(cat)
+        page_items, total = paginate(all_meals, page, PAGE_SIZE)
+
+        await query.message.edit_text(
+            f"🏷️ Category: <b>{html.escape(cat)}</b>\nChoose a recipe:",
+            parse_mode="HTML",
+            reply_markup=meals_kb(page_items, "cat", cat, page, total)
+        )
+        return
+
+    await query.message.reply_text("Use the menu 🙂", reply_markup=MENU)
 
 
 def main():
@@ -402,6 +600,8 @@ def main():
     app.add_handler(CommandHandler("random", random_cmd))
     app.add_handler(CommandHandler("name", name_cmd))
     app.add_handler(CommandHandler("find", find_cmd))
+    app.add_handler(CommandHandler("cuisines", cuisines_cmd))
+    app.add_handler(CommandHandler("categories", categories_cmd))
 
     app.add_handler(CallbackQueryHandler(cb))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
