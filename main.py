@@ -35,8 +35,10 @@ MENU = ReplyKeyboardMarkup(
     ],
     resize_keyboard=True,
 )
+BACK = ReplyKeyboardMarkup([[BTN_BACK]], resize_keyboard=True)
 
 
+# ---------- DB ----------
 class DB:
     def __init__(self, path: str = "bot.db"):
         self.path = path
@@ -47,14 +49,12 @@ class DB:
 
     def init(self):
         with self.c() as con:
-            # Настройки пользователя
             con.execute(
                 "CREATE TABLE IF NOT EXISTS settings("
                 "user_id INTEGER PRIMARY KEY, "
                 "max_results INTEGER NOT NULL DEFAULT 5)"
             )
 
-            # История просмотров
             con.execute("""CREATE TABLE IF NOT EXISTS history(
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
@@ -70,6 +70,22 @@ class DB:
                 (user_id, int(time.time()), meal_id, meal_name)
             )
 
+    def get_max(self, user_id: int) -> int:
+        with self.c() as con:
+            row = con.execute(
+                "SELECT max_results FROM settings WHERE user_id=?",
+                (user_id,)
+            ).fetchone()
+            if not row:
+                con.execute(
+                    "INSERT INTO settings(user_id,max_results) VALUES(?,5)",
+                    (user_id,)
+                )
+                return 5
+            return int(row[0])
+
+
+# ---------- TheMealDB API ----------
 class MealDB:
     def __init__(self, api_key: str = "1"):
         self.base = f"https://www.themealdb.com/api/json/v1/{api_key}"
@@ -90,6 +106,25 @@ class MealDB:
         d = await self.get("random.php", {})
         m = d.get("meals") or []
         return m[0] if m else None
+
+    async def search_name(self, q: str) -> List[dict]:
+        d = await self.get("search.php", {"s": q})
+        return d.get("meals") or []
+
+    async def lookup(self, meal_id: str) -> Optional[dict]:
+        d = await self.get("lookup.php", {"i": meal_id})
+        m = d.get("meals") or []
+        return m[0] if m else None
+
+    async def filter_ing(self, ing: str) -> List[dict]:
+        d = await self.get("filter.php", {"i": ing})
+        return d.get("meals") or []
+
+
+def parse_ingredients(s: str) -> List[str]:
+    s = (s or "").replace(";", ",").replace("\n", ",")
+    items = [x.strip() for x in s.split(",") if x.strip()]
+    return [x.lower().replace(" ", "_") for x in items][:8]
 
 
 def meal_full_text(meal: dict) -> str:
@@ -117,6 +152,7 @@ def meal_full_text(meal: dict) -> str:
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.user_data.pop("mode", None)
     await update.message.reply_text(
         "Hi! I'm a recipes bot 🍽️\nChoose an action:",
         reply_markup=MENU
@@ -125,7 +161,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
-        "Commands:\n/start - Start bot\n/help - This help\n/random - Random recipe",
+        "Commands:\n/start - Start\n/help - Help\n/random - Random recipe\n/name - Search by name\n/find - Search by ingredients",
         reply_markup=MENU
     )
 
@@ -139,7 +175,6 @@ async def random_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await update.message.reply_text("Nothing found 😕", reply_markup=MENU)
         return
 
-    # Сохраняем в историю
     meal_id = str(meal.get("idMeal") or "")
     meal_name = str(meal.get("strMeal") or "—")
     if meal_id:
@@ -158,6 +193,115 @@ async def random_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=MENU)
 
 
+async def name_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.user_data["mode"] = "name"
+    await update.message.reply_text(
+        "Send a recipe name (English):",
+        reply_markup=BACK
+    )
+
+
+async def find_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.user_data["mode"] = "ing"
+    await update.message.reply_text(
+        "Send ingredients separated by commas (English):",
+        reply_markup=BACK
+    )
+
+
+async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    api: MealDB = context.application.bot_data["api"]
+    db: DB = context.application.bot_data["db"]
+
+    text = (update.message.text or "").strip()
+
+    # Кнопка Назад
+    if text == BTN_BACK:
+        context.user_data.pop("mode", None)
+        await update.message.reply_text("OK.", reply_markup=MENU)
+        return
+
+    # Кнопки меню
+    if text == BTN_HELP:
+        await help_cmd(update, context)
+        return
+    if text == BTN_RANDOM:
+        await random_cmd(update, context)
+        return
+    if text == BTN_NAME:
+        await name_cmd(update, context)
+        return
+    if text == BTN_ING:
+        await find_cmd(update, context)
+        return
+
+    mode = context.user_data.get("mode")
+    limit = min(max(db.get_max(update.effective_user.id), 1), 10)
+
+    if mode == "name":
+        meals = await api.search_name(text)
+        context.user_data.pop("mode", None)
+
+        if not meals:
+            await update.message.reply_text("No results 😕", reply_markup=MENU)
+            return
+
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        kb_rows = []
+        for meal in meals[:limit]:
+            name = meal.get("strMeal", "—")
+            meal_id = meal.get("idMeal", "")
+            kb_rows.append([InlineKeyboardButton(name, callback_data=f"meal:{meal_id}")])
+        kb_rows.append([InlineKeyboardButton("🏠 Menu", callback_data="menu")])
+
+        await update.message.reply_text(
+            "Choose a recipe:",
+            reply_markup=InlineKeyboardMarkup(kb_rows)
+        )
+        return
+
+    if mode == "ing":
+        ings = parse_ingredients(text)
+        if not ings:
+            await update.message.reply_text("Example: chicken, garlic", reply_markup=BACK)
+            return
+
+        # Ищем рецепты, содержащие ВСЕ ингредиенты
+        sets = []
+        name_by = {}
+        for ing in ings:
+            items = await api.filter_ing(ing)
+            ids = set()
+            for it in items:
+                mid = it.get("idMeal")
+                if mid:
+                    ids.add(mid)
+                    name_by[mid] = it.get("strMeal", "—")
+            sets.append(ids)
+
+        common = set.intersection(*sets) if sets else set()
+        context.user_data.pop("mode", None)
+
+        if not common:
+            await update.message.reply_text("No matches 😕", reply_markup=MENU)
+            return
+
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        kb_rows = []
+        for mid in list(common)[:limit]:
+            name = name_by.get(mid, "—")
+            kb_rows.append([InlineKeyboardButton(name, callback_data=f"meal:{mid}")])
+        kb_rows.append([InlineKeyboardButton("🏠 Menu", callback_data="menu")])
+
+        await update.message.reply_text(
+            "Choose a recipe:",
+            reply_markup=InlineKeyboardMarkup(kb_rows)
+        )
+        return
+
+    await update.message.reply_text("Use the menu buttons 🙂", reply_markup=MENU)
+
+
 def main():
     token = os.getenv("TELEGRAM_TOKEN", "").strip()
     if not token:
@@ -173,6 +317,9 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("random", random_cmd))
+    app.add_handler(CommandHandler("name", name_cmd))
+    app.add_handler(CommandHandler("find", find_cmd))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
 
     app.run_polling()
 
