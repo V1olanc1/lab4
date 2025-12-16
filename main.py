@@ -2,6 +2,8 @@ import os
 import logging
 import html
 import httpx
+import sqlite3
+import time
 from typing import Optional, List, Dict
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
@@ -35,7 +37,39 @@ MENU = ReplyKeyboardMarkup(
 )
 
 
-# ---------- TheMealDB API ----------
+class DB:
+    def __init__(self, path: str = "bot.db"):
+        self.path = path
+        self.init()
+
+    def c(self):
+        return sqlite3.connect(self.path)
+
+    def init(self):
+        with self.c() as con:
+            # Настройки пользователя
+            con.execute(
+                "CREATE TABLE IF NOT EXISTS settings("
+                "user_id INTEGER PRIMARY KEY, "
+                "max_results INTEGER NOT NULL DEFAULT 5)"
+            )
+
+            # История просмотров
+            con.execute("""CREATE TABLE IF NOT EXISTS history(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                ts INTEGER NOT NULL,
+                meal_id TEXT NOT NULL,
+                meal_name TEXT NOT NULL
+            )""")
+
+    def add_history(self, user_id: int, meal_id: str, meal_name: str):
+        with self.c() as con:
+            con.execute(
+                "INSERT INTO history(user_id,ts,meal_id,meal_name) VALUES(?,?,?,?)",
+                (user_id, int(time.time()), meal_id, meal_name)
+            )
+
 class MealDB:
     def __init__(self, api_key: str = "1"):
         self.base = f"https://www.themealdb.com/api/json/v1/{api_key}"
@@ -98,11 +132,18 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def random_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     api: MealDB = context.application.bot_data["api"]
-    meal = await api.random()
+    db: DB = context.application.bot_data["db"]
 
+    meal = await api.random()
     if not meal:
         await update.message.reply_text("Nothing found 😕", reply_markup=MENU)
         return
+
+    # Сохраняем в историю
+    meal_id = str(meal.get("idMeal") or "")
+    meal_name = str(meal.get("strMeal") or "—")
+    if meal_id:
+        db.add_history(update.effective_user.id, meal_id, meal_name)
 
     photo = (meal.get("strMealThumb") or "").strip()
     text = meal_full_text(meal)
@@ -123,9 +164,11 @@ def main():
         raise SystemExit("Missing TELEGRAM_TOKEN in .env")
 
     api_key = os.getenv("MEALDB_API_KEY", "1").strip() or "1"
+    db_path = os.getenv("DB_PATH", "bot.db").strip() or "bot.db"
 
     app = Application.builder().token(token).build()
     app.bot_data["api"] = MealDB(api_key)
+    app.bot_data["db"] = DB(db_path)
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
