@@ -4,9 +4,9 @@ import html
 import httpx
 import sqlite3
 import time
-from typing import Optional, List, Dict
-from telegram import Update, ReplyKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
+from typing import Optional, List, Dict, Tuple
+from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -63,6 +63,14 @@ class DB:
                 meal_name TEXT NOT NULL
             )""")
 
+            con.execute("""CREATE TABLE IF NOT EXISTS favorites(
+                user_id INTEGER NOT NULL,
+                meal_id TEXT NOT NULL,
+                meal_name TEXT NOT NULL,
+                ts INTEGER NOT NULL,
+                PRIMARY KEY(user_id, meal_id)
+            )""")
+
     def add_history(self, user_id: int, meal_id: str, meal_name: str):
         with self.c() as con:
             con.execute(
@@ -83,6 +91,25 @@ class DB:
                 )
                 return 5
             return int(row[0])
+
+    def is_fav(self, user_id: int, meal_id: str) -> bool:
+        with self.c() as con:
+            row = con.execute(
+                "SELECT 1 FROM favorites WHERE user_id=? AND meal_id=?",
+                (user_id, meal_id)
+            ).fetchone()
+        return bool(row)
+
+    def add_fav(self, user_id: int, meal_id: str, meal_name: str):
+        with self.c() as con:
+            con.execute(
+                "INSERT OR REPLACE INTO favorites(user_id, meal_id, meal_name, ts) VALUES(?,?,?,?)",
+                (user_id, meal_id, meal_name, int(time.time()))
+            )
+
+    def del_fav(self, user_id: int, meal_id: str):
+        with self.c() as con:
+            con.execute("DELETE FROM favorites WHERE user_id=? AND meal_id=?", (user_id, meal_id))
 
 
 # ---------- TheMealDB API ----------
@@ -151,6 +178,38 @@ def meal_full_text(meal: dict) -> str:
     return body[:3800]
 
 
+def fav_kb(db: DB, user_id: int, meal_id: str) -> InlineKeyboardMarkup:
+    is_f = db.is_fav(user_id, meal_id)
+    label = "✅ In favorites" if is_f else "⭐ Add to favorites"
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(label, callback_data=f"fav:{meal_id}")],
+        [InlineKeyboardButton("🏠 Menu", callback_data="menu")],
+    ])
+
+
+async def send_meal(msg, context: ContextTypes.DEFAULT_TYPE, meal: dict, user_id: int):
+    db: DB = context.application.bot_data["db"]
+
+    meal_id = str(meal.get("idMeal") or "")
+    meal_name = str(meal.get("strMeal") or "—")
+
+    if meal_id:
+        db.add_history(user_id, meal_id, meal_name)
+
+    photo = (meal.get("strMealThumb") or "").strip()
+    text = meal_full_text(meal)
+    kb = fav_kb(db, user_id, meal_id) if meal_id else None
+
+    if photo:
+        await msg.reply_photo(
+            photo=photo,
+            caption=f"🍽️ <b>{html.escape(meal.get('strMeal', 'Untitled'))}</b>",
+            parse_mode="HTML"
+        )
+
+    await msg.reply_text(text, parse_mode="HTML", reply_markup=kb)
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data.pop("mode", None)
     await update.message.reply_text(
@@ -168,29 +227,13 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def random_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     api: MealDB = context.application.bot_data["api"]
-    db: DB = context.application.bot_data["db"]
-
     meal = await api.random()
+
     if not meal:
         await update.message.reply_text("Nothing found 😕", reply_markup=MENU)
         return
 
-    meal_id = str(meal.get("idMeal") or "")
-    meal_name = str(meal.get("strMeal") or "—")
-    if meal_id:
-        db.add_history(update.effective_user.id, meal_id, meal_name)
-
-    photo = (meal.get("strMealThumb") or "").strip()
-    text = meal_full_text(meal)
-
-    if photo:
-        await update.message.reply_photo(
-            photo=photo,
-            caption=f"🍽️ <b>{html.escape(meal.get('strMeal', 'Untitled'))}</b>",
-            parse_mode="HTML"
-        )
-
-    await update.message.reply_text(text, parse_mode="HTML", reply_markup=MENU)
+    await send_meal(update.message, context, meal, update.effective_user.id)
 
 
 async def name_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -246,7 +289,6 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await update.message.reply_text("No results 😕", reply_markup=MENU)
             return
 
-        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
         kb_rows = []
         for meal in meals[:limit]:
             name = meal.get("strMeal", "—")
@@ -266,7 +308,6 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await update.message.reply_text("Example: chicken, garlic", reply_markup=BACK)
             return
 
-        # Ищем рецепты, содержащие ВСЕ ингредиенты
         sets = []
         name_by = {}
         for ing in ings:
@@ -286,7 +327,6 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await update.message.reply_text("No matches 😕", reply_markup=MENU)
             return
 
-        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
         kb_rows = []
         for mid in list(common)[:limit]:
             name = name_by.get(mid, "—")
@@ -300,6 +340,49 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     await update.message.reply_text("Use the menu buttons 🙂", reply_markup=MENU)
+
+
+async def cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    api: MealDB = context.application.bot_data["api"]
+    db: DB = context.application.bot_data["db"]
+    query = update.callback_query
+    data = query.data
+
+    await query.answer()
+
+    if data == "menu":
+        await query.message.reply_text("Menu:", reply_markup=MENU)
+        return
+
+    if data.startswith("meal:"):
+        meal_id = data.split(":", 1)[1]
+        meal = await api.lookup(meal_id)
+
+        if not meal:
+            await query.message.reply_text("Failed to load 😕", reply_markup=MENU)
+            return
+
+        await send_meal(query.message, context, meal, query.from_user.id)
+        return
+
+    if data.startswith("fav:"):
+        meal_id = data.split(":", 1)[1]
+
+        if db.is_fav(query.from_user.id, meal_id):
+            db.del_fav(query.from_user.id, meal_id)
+        else:
+            meal = await api.lookup(meal_id)
+            title = meal.get("strMeal", "—") if meal else "—"
+            db.add_fav(query.from_user.id, meal_id, title)
+
+        # Обновляем кнопку
+        try:
+            await query.message.edit_reply_markup(
+                reply_markup=fav_kb(db, query.from_user.id, meal_id)
+            )
+        except:
+            pass
+        return
 
 
 def main():
@@ -319,6 +402,8 @@ def main():
     app.add_handler(CommandHandler("random", random_cmd))
     app.add_handler(CommandHandler("name", name_cmd))
     app.add_handler(CommandHandler("find", find_cmd))
+
+    app.add_handler(CallbackQueryHandler(cb))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
 
     app.run_polling()
