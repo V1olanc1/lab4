@@ -29,7 +29,6 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("recipe_bot")
 
-# ---------- UI ----------
 BTN_ING = "🔎 By ingredients"
 BTN_NAME = "🍲 By name"
 BTN_AREA = "🌍 By cuisine"
@@ -53,15 +52,13 @@ MENU = ReplyKeyboardMarkup(
 )
 BACK = ReplyKeyboardMarkup([[BTN_BACK]], resize_keyboard=True)
 
-PAGE_SIZE = 20  # for areas/categories/meals lists
-
+PAGE_SIZE = 20
 
 class UserError(Exception):
     """Expected errors shown to user nicely."""
     pass
 
 
-# ---------- DB ----------
 class DB:
     def __init__(self, path: str = "bot.db"):
         self.path = path
@@ -79,12 +76,10 @@ class DB:
 
     def init(self):
         with self.c() as con:
-            # settings
             con.execute(
                 "CREATE TABLE IF NOT EXISTS settings(user_id INTEGER PRIMARY KEY, max_results INTEGER NOT NULL DEFAULT 5)"
             )
 
-            # migrate if db is from Spoonacular (recipe_id/title)
             hist_cols = self._cols(con, "history")
             fav_cols = self._cols(con, "favorites")
             spoonacular_history = ("recipe_id" in hist_cols) and ("meal_id" not in hist_cols)
@@ -94,7 +89,6 @@ class DB:
             if spoonacular_favs:
                 con.execute("DROP TABLE IF EXISTS favorites")
 
-            # TheMealDB schema
             con.execute("""CREATE TABLE IF NOT EXISTS history(
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
@@ -178,7 +172,6 @@ class DB:
         return [(str(a), str(b), int(c)) for a, b, c in rows]
 
 
-# ---------- TheMealDB API ----------
 class MealDB:
     def __init__(self, api_key: str = "1"):
         self.base = f"https://www.themealdb.com/api/json/v1/{api_key}"
@@ -247,20 +240,16 @@ class MealDB:
         return d.get("meals") or []
 
 
-# ---------- helpers ----------
 def clamp(n: int, lo: int, hi: int) -> int:
     return lo if n < lo else hi if n > hi else n
 
-
 def trunc(s: str, n: int) -> str:
     return s if len(s) <= n else s[:n] + "…"
-
 
 def parse_ingredients(s: str) -> List[str]:
     s = (s or "").replace(";", ",").replace("\n", ",")
     items = [x.strip() for x in s.split(",") if x.strip()]
     return [x.lower().replace(" ", "_") for x in items][:8]
-
 
 def ingredients_text(meal: dict) -> str:
     lines = []
@@ -271,13 +260,11 @@ def ingredients_text(meal: dict) -> str:
             lines.append(f"• {ing}" + (f" — {meas}" if meas else ""))
     return "\n".join(lines) if lines else "—"
 
-
 def meal_caption(meal: dict) -> str:
     name = (meal.get("strMeal") or "Untitled").strip()
     cat = (meal.get("strCategory") or "—").strip()
     area = (meal.get("strArea") or "—").strip()
     return trunc(f"🍽️ <b>{html.escape(name)}</b>\n🏷️ {html.escape(cat)} • {html.escape(area)}", 950)
-
 
 def meal_full_text(meal: dict) -> str:
     name = (meal.get("strMeal") or "Untitled").strip()
@@ -294,7 +281,6 @@ def meal_full_text(meal: dict) -> str:
     )
     return trunc(body, 3800)
 
-
 def fav_kb(db: DB, user_id: int, meal_id: str) -> InlineKeyboardMarkup:
     is_f = db.is_fav(user_id, meal_id)
     label = "✅ In favorites" if is_f else "⭐ Add to favorites"
@@ -303,7 +289,6 @@ def fav_kb(db: DB, user_id: int, meal_id: str) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("🏠 Menu", callback_data="menu")],
     ])
 
-
 def fav_list_kb(items: List[Tuple[str, str, int]]) -> InlineKeyboardMarkup:
     rows = []
     for mid, name, _ in items:
@@ -311,7 +296,6 @@ def fav_list_kb(items: List[Tuple[str, str, int]]) -> InlineKeyboardMarkup:
         rows.append([InlineKeyboardButton("🗑 Remove", callback_data=f"unfav:{mid}")])
     rows.append([InlineKeyboardButton("🏠 Menu", callback_data="menu")])
     return InlineKeyboardMarkup(rows)
-
 
 def confirm_kb(kind: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
@@ -322,9 +306,7 @@ def confirm_kb(kind: str) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("🏠 Menu", callback_data="menu")],
     ])
 
-
 T = TypeVar("T")
-
 
 def paginate(items: List[T], page: int, page_size: int) -> Tuple[List[T], int]:
     total_pages = max(1, (len(items) + page_size - 1) // page_size)
@@ -332,7 +314,6 @@ def paginate(items: List[T], page: int, page_size: int) -> Tuple[List[T], int]:
     start_idx = page * page_size
     end_idx = start_idx + page_size
     return items[start_idx:end_idx], total_pages
-
 
 def list_kb(items: List[str], prefix: str, page: int, total_pages: int) -> InlineKeyboardMarkup:
     rows = []
@@ -347,15 +328,14 @@ def list_kb(items: List[str], prefix: str, page: int, total_pages: int) -> Inlin
 
     nav = []
     if page > 0:
-        nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"{prefix}:page:{page - 1}"))
+        nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"{prefix}:page:{page-1}"))
     if page < total_pages - 1:
-        nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"{prefix}:page:{page + 1}"))
+        nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"{prefix}:page:{page+1}"))
     if nav:
         rows.append(nav)
 
     rows.append([InlineKeyboardButton("🏠 Menu", callback_data="menu")])
     return InlineKeyboardMarkup(rows)
-
 
 def meals_kb(meals: List[dict], kind: str, value: str, page: int, total_pages: int) -> InlineKeyboardMarkup:
     rows = []
@@ -366,9 +346,9 @@ def meals_kb(meals: List[dict], kind: str, value: str, page: int, total_pages: i
 
     nav = []
     if page > 0:
-        nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"{kind}_meals:page:{quote(value)}:{page - 1}"))
+        nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"{kind}_meals:page:{quote(value)}:{page-1}"))
     if page < total_pages - 1:
-        nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"{kind}_meals:page:{quote(value)}:{page + 1}"))
+        nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"{kind}_meals:page:{quote(value)}:{page+1}"))
     if nav:
         rows.append(nav)
 
@@ -376,10 +356,7 @@ def meals_kb(meals: List[dict], kind: str, value: str, page: int, total_pages: i
     rows.append([InlineKeyboardButton("🏠 Menu", callback_data="menu")])
     return InlineKeyboardMarkup(rows)
 
-
-# ---------- chat cleanup ----------
 MAX_TRACKED_BOT_MSGS = 30
-
 
 async def _safe_delete(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_id: int):
     """Best-effort message deletion (ignore failures / missing rights)."""
@@ -388,14 +365,12 @@ async def _safe_delete(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message
     except TelegramError:
         pass
 
-
 async def _delete_user_message_from_update(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Delete the user's trigger message (only for message updates, not callbacks)."""
     msg = update.message
     if not msg or not msg.from_user or getattr(msg.from_user, "is_bot", False):
         return
     await _safe_delete(context, msg.chat.id, msg.message_id)
-
 
 async def _ui_cleanup(context: ContextTypes.DEFAULT_TYPE, chat_id: int, keep_ids: List[int]):
     old_ids: List[int] = context.user_data.get("bot_msg_ids", []) or []
@@ -409,14 +384,14 @@ async def _ui_cleanup(context: ContextTypes.DEFAULT_TYPE, chat_id: int, keep_ids
             pass
     context.user_data["bot_msg_ids"] = list(keep_ids or [])[-MAX_TRACKED_BOT_MSGS:]
 
-
 async def ui_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, msg_text: str, **kwargs):
-    """Send a new bot message and delete previous bot messages (keep only this one)."""
     kwargs.setdefault("quote", False)
     m = await update.effective_message.reply_text(msg_text, **kwargs)
     await _ui_cleanup(context, update.effective_chat.id, [m.message_id])
     await _delete_user_message_from_update(update, context)
     return m
+
+
 
 
 async def send_meal(msg, context: ContextTypes.DEFAULT_TYPE, meal: dict, user_id: int):
@@ -451,6 +426,7 @@ async def send_meal(msg, context: ContextTypes.DEFAULT_TYPE, meal: dict, user_id
 
 
 async def safe_run(update: Update, context: ContextTypes.DEFAULT_TYPE, coro) -> None:
+
     try:
         await coro
         return
@@ -470,18 +446,21 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data.pop("mode", None)
     await ui_reply(update, context, "Hi! I'm a recipes bot 🍽️\nChoose an action:", reply_markup=MENU)
 
-
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ui_reply(update, context,
-                   "Commands:\n/start - Start\n/help - Help\n/random - Random recipe\n"
-                   "/name - Search by name\n/find - Search by ingredients\n"
-                   "/cuisines - Browse cuisines\n/categories - Browse categories\n"
-                   "/history - History\n/favorites - Favorites\n"
-                   "/clearhistory - Clear history\n/clearfavorites - Clear favorites\n"
-                   "/settings - Settings",
-                   reply_markup=MENU,
-                   )
-
+        "Commands:\n"
+        "/random — random recipe\n"
+        "/name — search by name\n"
+        "/find — search by ingredients\n"
+        "/cuisines — browse cuisines (areas)\n"
+        "/categories — browse categories\n"
+        "/history — history\n"
+        "/favorites — favorites\n"
+        "/clearhistory — clear history\n"
+        "/clearfavorites — clear favorites\n"
+        "/settings — settings",
+        reply_markup=MENU,
+    )
 
 async def settings_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     db: DB = context.application.bot_data["db"]
@@ -489,132 +468,113 @@ async def settings_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     context.user_data["mode"] = "set_max"
     await ui_reply(update, context, f"⚙️ Current max results = {m}\nSend a number 1–10:", reply_markup=BACK)
 
-
 async def history_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     db: DB = context.application.bot_data["db"]
     limit = clamp(db.get_max(update.effective_user.id), 1, 10)
     items = db.get_history(update.effective_user.id, limit)
-
     if not items:
         await ui_reply(update, context, "History is empty 🙂", reply_markup=MENU)
         return
-
     kb = [[InlineKeyboardButton(name, callback_data=f"meal:{mid}")] for mid, name, _ in items]
     kb.append([InlineKeyboardButton("🏠 Menu", callback_data="menu")])
-
     await ui_reply(update, context, "🕘 Recent views:", reply_markup=InlineKeyboardMarkup(kb))
-
+    return
 
 async def favorites_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     db: DB = context.application.bot_data["db"]
     limit = clamp(db.get_max(update.effective_user.id), 1, 10)
     items = db.get_favs(update.effective_user.id, limit)
-
     if not items:
         await ui_reply(update, context, "Favorites is empty 🙂", reply_markup=MENU)
         return
-
     await ui_reply(update, context, "⭐ Favorites:", reply_markup=fav_list_kb(items))
-
+    return
 
 async def clearhistory_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ui_reply(update, context, "Clear history?", reply_markup=confirm_kb("history"))
 
-
 async def clearfavorites_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ui_reply(update, context, "Clear favorites?", reply_markup=confirm_kb("favorites"))
 
-
 async def random_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     api: MealDB = context.application.bot_data["api"]
-
     async def _do():
         meal = await api.random()
         if not meal:
             await ui_reply(update, context, "Nothing found 😕", reply_markup=MENU)
             return
         await send_meal(update.message, context, meal, update.effective_user.id)
-
+        return
     await safe_run(update, context, _do())
-
 
 async def name_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data["mode"] = "name"
     await ui_reply(update, context, "Send a recipe name (English):", reply_markup=BACK)
 
-
 async def find_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data["mode"] = "ing"
     await ui_reply(update, context, "Send ingredients separated by commas (English):", reply_markup=BACK)
 
-
 async def cuisines_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     api: MealDB = context.application.bot_data["api"]
-
     async def _do():
         areas = await api.list_areas()
         page = 0
         page_items, total = paginate(areas, page, PAGE_SIZE)
         await ui_reply(update, context,
-                       "🌍 Choose a cuisine (area):",
-                       reply_markup=list_kb(page_items, "area", page, total),
-                       )
-
+            "🌍 Choose a cuisine (area):",
+            reply_markup=list_kb(page_items, "area", page, total),
+        )
     await safe_run(update, context, _do())
-
 
 async def categories_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     api: MealDB = context.application.bot_data["api"]
-
     async def _do():
         cats = await api.list_categories()
         page = 0
         page_items, total = paginate(cats, page, PAGE_SIZE)
         await ui_reply(update, context,
-                       "🏷️ Choose a category:",
-                       reply_markup=list_kb(page_items, "cat", page, total),
-                       )
-
+            "🏷️ Choose a category:",
+            reply_markup=list_kb(page_items, "cat", page, total),
+        )
     await safe_run(update, context, _do())
 
 
-# ---------- text handler ----------
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     api: MealDB = context.application.bot_data["api"]
     db: DB = context.application.bot_data["db"]
 
-    text = (update.message.text or "").strip()
+    t = (update.message.text or "").strip()
 
-    if text == BTN_BACK:
+    if t == BTN_BACK:
         context.user_data.pop("mode", None)
         await ui_reply(update, context, "OK.", reply_markup=MENU)
         return
-
-    if text == BTN_HELP:
+    if t == BTN_HELP:
         await help_cmd(update, context)
         return
-    if text == BTN_SETTINGS:
+    if t == BTN_SETTINGS:
         await settings_cmd(update, context)
         return
-    if text == BTN_HISTORY:
+    if t == BTN_HISTORY:
         await history_cmd(update, context)
         return
-    if text == BTN_FAVS:
+    if t == BTN_FAVS:
         await favorites_cmd(update, context)
         return
-    if text == BTN_RANDOM:
+    if t == BTN_RANDOM:
         await random_cmd(update, context)
         return
-    if text == BTN_NAME:
+    if t == BTN_NAME:
         await name_cmd(update, context)
         return
-    if text == BTN_ING:
+    if t == BTN_ING:
         await find_cmd(update, context)
         return
-    if text == BTN_AREA:
+    if t == BTN_AREA:
         await cuisines_cmd(update, context)
         return
-    if text == BTN_CAT:
+    if t == BTN_CAT:
         await categories_cmd(update, context)
         return
 
@@ -623,7 +583,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     if mode == "set_max":
         try:
-            val = int(text)
+            val = int(t)
             if not (1 <= val <= 10):
                 raise ValueError
         except ValueError:
@@ -636,28 +596,28 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     if mode == "name":
         async def _do():
-            meals = await api.search_name(text)
+            meals = await api.search_name(t)
             context.user_data.pop("mode", None)
             if not meals:
                 await ui_reply(update, context, "No results 😕", reply_markup=MENU)
                 return
-            kb = [[InlineKeyboardButton(m.get("strMeal", "—"), callback_data=f"meal:{m.get('idMeal', '')}")]
+            kb = [[InlineKeyboardButton(m.get("strMeal", "—"), callback_data=f"meal:{m.get('idMeal','')}")]
                   for m in meals[:limit]]
             kb.append([InlineKeyboardButton("🏠 Menu", callback_data="menu")])
             await ui_reply(update, context, "Choose a recipe:", reply_markup=InlineKeyboardMarkup(kb))
-
+            return
         await safe_run(update, context, _do())
         return
 
     if mode == "ing":
         async def _do():
-            ings = parse_ingredients(text)
+            ings = parse_ingredients(t)
             if not ings:
                 await ui_reply(update, context, "Example: chicken, garlic", reply_markup=BACK)
                 return
 
             sets = []
-            name_by = {}
+            name_by: Dict[str, str] = {}
             for ing in ings:
                 items = await api.filter_ing(ing)
                 ids = set()
@@ -678,21 +638,18 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                   for mid in list(common)[:limit]]
             kb.append([InlineKeyboardButton("🏠 Menu", callback_data="menu")])
             await ui_reply(update, context, "Choose a recipe:", reply_markup=InlineKeyboardMarkup(kb))
-
         await safe_run(update, context, _do())
         return
 
     await ui_reply(update, context, "Use the menu buttons 🙂", reply_markup=MENU)
 
 
-# ---------- callback handler ----------
 async def cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     api: MealDB = context.application.bot_data["api"]
     db: DB = context.application.bot_data["db"]
-    query = update.callback_query
-    data = query.data
-
-    await query.answer()
+    q = update.callback_query
+    data = (q.data or "").strip()
+    await q.answer()
 
     async def _do():
         if data == "menu":
@@ -705,24 +662,22 @@ async def cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             if not meal:
                 await ui_reply(update, context, "Failed to load 😕", reply_markup=MENU)
                 return
-            await send_meal(query.message, context, meal, query.from_user.id)
+            await send_meal(q.message, context, meal, q.from_user.id)
             return
 
         if data.startswith("fav:"):
             mid = data.split(":", 1)[1]
             if not mid:
                 return
-            if db.is_fav(query.from_user.id, mid):
-                db.del_fav(query.from_user.id, mid)
+            if db.is_fav(q.from_user.id, mid):
+                db.del_fav(q.from_user.id, mid)
             else:
                 meal = await api.lookup(mid)
                 title = str(meal.get("strMeal") or "—") if meal else "—"
-                db.add_fav(query.from_user.id, mid, title)
+                db.add_fav(q.from_user.id, mid, title)
 
             try:
-                await query.message.edit_reply_markup(
-                    reply_markup=fav_kb(db, query.from_user.id, mid)
-                )
+                await q.message.edit_reply_markup(reply_markup=fav_kb(db, q.from_user.id, mid))
             except TelegramError:
                 pass
             return
@@ -731,17 +686,17 @@ async def cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             mid = data.split(":", 1)[1]
             if not mid:
                 return
-            db.del_fav(query.from_user.id, mid)
+            db.del_fav(q.from_user.id, mid)
 
-            limit = clamp(db.get_max(query.from_user.id), 1, 10)
-            items = db.get_favs(query.from_user.id, limit)
+            limit = clamp(db.get_max(q.from_user.id), 1, 10)
+            items = db.get_favs(q.from_user.id, limit)
 
             if not items:
                 await ui_reply(update, context, "Favorites is empty 🙂", reply_markup=MENU)
                 return
 
             try:
-                await query.message.edit_text("⭐ Favorites:", reply_markup=fav_list_kb(items))
+                await q.message.edit_text("⭐ Favorites:", reply_markup=fav_list_kb(items))
             except TelegramError:
                 await ui_reply(update, context, "⭐ Favorites:", reply_markup=fav_list_kb(items))
             return
@@ -752,11 +707,11 @@ async def cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 await ui_reply(update, context, "Canceled 👍", reply_markup=MENU)
                 return
             if kind == "history":
-                db.clear_history(query.from_user.id)
+                db.clear_history(q.from_user.id)
                 await ui_reply(update, context, "History cleared ✅", reply_markup=MENU)
                 return
             if kind == "favorites":
-                db.clear_favs(query.from_user.id)
+                db.clear_favs(q.from_user.id)
                 await ui_reply(update, context, "Favorites cleared ✅", reply_markup=MENU)
                 return
 
@@ -764,16 +719,14 @@ async def cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             page = int(data.split(":")[-1])
             areas = await api.list_areas()
             page_items, total = paginate(areas, page, PAGE_SIZE)
-            await ui_reply(update, context, "🌍 Choose a cuisine (area):",
-                           reply_markup=list_kb(page_items, "area", page, total))
+            await ui_reply(update, context, "🌍 Choose a cuisine (area):", reply_markup=list_kb(page_items, "area", page, total))
             return
 
         if data.startswith("cat:page:"):
             page = int(data.split(":")[-1])
             cats = await api.list_categories()
             page_items, total = paginate(cats, page, PAGE_SIZE)
-            await ui_reply(update, context, "🏷️ Choose a category:",
-                           reply_markup=list_kb(page_items, "cat", page, total))
+            await ui_reply(update, context, "🏷️ Choose a category:", reply_markup=list_kb(page_items, "cat", page, total))
             return
 
         if data.startswith("area:sel:"):
@@ -782,8 +735,8 @@ async def cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             page = 0
             page_items, total = paginate(all_meals, page, PAGE_SIZE)
             await ui_reply(
-                update,
-                context,
+        update,
+        context,
                 f"🌍 Cuisine: <b>{html.escape(area)}</b>\nChoose a recipe:",
                 parse_mode="HTML",
                 reply_markup=meals_kb(page_items, "area", area, page, total),
@@ -796,8 +749,8 @@ async def cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             page = 0
             page_items, total = paginate(all_meals, page, PAGE_SIZE)
             await ui_reply(
-                update,
-                context,
+        update,
+        context,
                 f"🏷️ Category: <b>{html.escape(cat)}</b>\nChoose a recipe:",
                 parse_mode="HTML",
                 reply_markup=meals_kb(page_items, "cat", cat, page, total),
@@ -811,8 +764,8 @@ async def cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             all_meals = await api.filter_area(area)
             page_items, total = paginate(all_meals, page, PAGE_SIZE)
             await ui_reply(
-                update,
-                context,
+        update,
+        context,
                 f"🌍 Cuisine: <b>{html.escape(area)}</b>\nChoose a recipe:",
                 parse_mode="HTML",
                 reply_markup=meals_kb(page_items, "area", area, page, total),
@@ -826,8 +779,8 @@ async def cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             all_meals = await api.filter_category(cat)
             page_items, total = paginate(all_meals, page, PAGE_SIZE)
             await ui_reply(
-                update,
-                context,
+        update,
+        context,
                 f"🏷️ Category: <b>{html.escape(cat)}</b>\nChoose a recipe:",
                 parse_mode="HTML",
                 reply_markup=meals_kb(page_items, "cat", cat, page, total),
@@ -839,7 +792,6 @@ async def cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await safe_run(update, context, _do())
 
 
-# ---------- main ----------
 def main():
     token = os.getenv("TELEGRAM_TOKEN", "").strip()
     if not token:
@@ -869,8 +821,17 @@ def main():
     app.add_handler(CallbackQueryHandler(cb))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
 
-    app.run_polling()
+    async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE):
+        log.error("Error: %s", context.error)
+        log.debug("Traceback:\n%s", traceback.format_exc())
+        try:
+            if isinstance(update, Update) and update.effective_message:
+                await ui_reply(update, context, "⚠️ Oops, something went wrong.", reply_markup=MENU)
+        except TelegramError:
+            pass
 
+    app.add_error_handler(on_error)
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
     main()
